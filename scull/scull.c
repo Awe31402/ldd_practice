@@ -68,8 +68,32 @@ static int scull_trim(struct scull_dev* dev)
     return 0;
 }
 
+static int scull_open(struct inode* inode, struct file* filp)
+{
+    struct scull_dev* dev;
+    dev = container_of(inode->i_cdev, struct scull_dev, cdev);
+
+    filp->private_data = dev;
+
+    if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
+        if (mutex_lock_interruptible(&dev->mutex))
+            return -ERESTARTSYS;
+        scull_trim(dev);
+        mutex_unlock(&dev->mutex);
+    }
+
+    return 0;
+}
+
+int scull_release(struct inode* inode, struct file* filp)
+{
+    return 0;
+}
+
 struct file_operations scull_fops = {
     .owner = THIS_MODULE,
+    .open = scull_open,
+    .release = scull_release,
 };
 
 inline void scull_cleanup(void)
@@ -88,6 +112,7 @@ inline void scull_cleanup(void)
 
     if (scull_class)
         class_destroy(scull_class);
+
     unregister_chrdev_region(devno, scull_nr_devs);
 }
 
