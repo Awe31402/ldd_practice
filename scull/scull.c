@@ -40,23 +40,15 @@ static int scull_trim(struct scull_dev* dev)
     int qset = dev->qset;
     int i;
 
-    for(ptr = dev->data; ptr; ptr = next) {
-        /*printk(KERN_INFO "scull_trim: trimming scull_devices %p",
-                ptr);*/
+    for (ptr = dev->data; ptr; ptr = next) {
         if (ptr->data) {
             for (i = 0; i < qset; i++) {
-                /*printk(KERN_INFO
-                        "scull_trim: freeing ptr->data[%d]", i);*/
                 kfree(ptr->data[i]);
             }
-           /* printk(KERN_INFO
-                        "scull_trim: freeing ptr->data");*/
             kfree(ptr->data);
             ptr->data = NULL;
         }
         next = ptr->next;
-        /*printk(KERN_INFO
-                        "scull_trim: freeing ptr");*/
         kfree(ptr);
     }
 
@@ -72,7 +64,6 @@ struct scull_qset* scull_follow(struct scull_dev* dev, int n)
 {
     struct scull_qset *qs = dev->data;
 
-    //printk(KERN_INFO "scull_follow\n");
     if (!qs) {
         qs = dev->data = kmalloc(sizeof(scull_qset), GFP_KERNEL);
         if (!qs)
@@ -81,7 +72,6 @@ struct scull_qset* scull_follow(struct scull_dev* dev, int n)
     }
 
     while (n--) {
-        //printk(KERN_INFO "scull_follow %d\n", n);
         if (!qs->next) {
             qs->next = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
             if (qs->next == NULL)
@@ -174,7 +164,7 @@ ssize_t scull_write(struct file* filp, const char __user *buf,
                 GFP_KERNEL);
         if (!ptr->data[s_pos])
             goto out;
-        //memset(ptr->data[s_pos], 0, quantum * sizeof(char));
+        memset(ptr->data[s_pos], 0, quantum * sizeof(char));
     }
 
     if (count > quantum - q_pos)
@@ -218,12 +208,37 @@ int scull_release(struct inode* inode, struct file* filp)
     return 0;
 }
 
+loff_t scull_llseek(struct file* filp, loff_t off, int whence)
+{
+    struct scull_dev *dev = filp->private_data;
+    loff_t newpos;
+
+    switch (whence) {
+        case 0: /* SEEK SET */
+            newpos = off;
+            break;
+        case 1: /* SEEK CUR */
+            newpos = filp->f_pos + off;
+            break;
+        case 2: /* SEEK END */
+            newpos = dev->size + off;
+            break;
+        default:
+            return -EINVAL;
+    }
+
+    if (newpos < 0) return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
+
 struct file_operations scull_fops = {
     .owner = THIS_MODULE,
     .open = scull_open,
     .release = scull_release,
     .read = scull_read,
     .write = scull_write,
+    .llseek = scull_llseek,
 };
 
 inline void scull_cleanup(void)
