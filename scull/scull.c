@@ -41,22 +41,22 @@ static int scull_trim(struct scull_dev* dev)
     int i;
 
     for(ptr = dev->data; ptr; ptr = next) {
-        printk(KERN_INFO "scull_trim: trimming scull_devices %p",
-                ptr);
+        /*printk(KERN_INFO "scull_trim: trimming scull_devices %p",
+                ptr);*/
         if (ptr->data) {
             for (i = 0; i < qset; i++) {
-                printk(KERN_INFO
-                        "scull_trim: freeing ptr->data[%d]", i);
+                /*printk(KERN_INFO
+                        "scull_trim: freeing ptr->data[%d]", i);*/
                 kfree(ptr->data[i]);
             }
-            printk(KERN_INFO
-                        "scull_trim: freeing ptr->data");
+           /* printk(KERN_INFO
+                        "scull_trim: freeing ptr->data");*/
             kfree(ptr->data);
             ptr->data = NULL;
         }
         next = ptr->next;
-        printk(KERN_INFO
-                        "scull_trim: freeing ptr");
+        /*printk(KERN_INFO
+                        "scull_trim: freeing ptr");*/
         kfree(ptr);
     }
 
@@ -66,6 +66,134 @@ static int scull_trim(struct scull_dev* dev)
     dev->data = NULL;
 
     return 0;
+}
+
+struct scull_qset* scull_follow(struct scull_dev* dev, int n)
+{
+    struct scull_qset *qs = dev->data;
+
+    //printk(KERN_INFO "scull_follow\n");
+    if (!qs) {
+        qs = dev->data = kmalloc(sizeof(scull_qset), GFP_KERNEL);
+        if (!qs)
+            return NULL;
+        memset(qs, 0, sizeof(struct scull_qset));
+    }
+
+    while (n--) {
+        //printk(KERN_INFO "scull_follow %d\n", n);
+        if (!qs->next) {
+            qs->next = kmalloc(sizeof(struct scull_qset), GFP_KERNEL);
+            if (qs->next == NULL)
+                return NULL;
+            memset(qs->next, 0, sizeof(struct scull_qset));
+        }
+        qs = qs->next;
+        continue;
+    }
+
+    return qs;
+}
+
+ssize_t scull_read(struct file* filp, char __user *buf,
+        size_t count, loff_t *f_pos)
+{
+    struct scull_dev *dev = filp->private_data;
+    struct scull_qset *ptr;
+    int quantum = dev->quantum;
+    int qset = dev->qset;
+    int item_size = quantum * qset;
+    int item, s_pos, q_pos, rest;
+    int retval = 0;
+
+    if (mutex_lock_interruptible(&dev->mutex))
+        return -ERESTARTSYS;
+    if (*f_pos >= dev->size)
+        goto out;
+    if (*f_pos + count > dev->size)
+        count = dev->size - *f_pos;
+
+    item = (long) *f_pos / item_size;
+    rest = (long) *f_pos % item_size;
+
+    s_pos = rest / quantum;
+    q_pos = rest % quantum;
+
+    ptr = scull_follow(dev, item);
+
+    if (ptr == NULL || !ptr->data || !ptr->data[s_pos])
+        goto out;
+    if (count > quantum - q_pos)
+        count = quantum - q_pos;
+
+    if (copy_to_user(buf, ptr->data[s_pos] + q_pos, count)) {
+        retval = -EFAULT;
+        goto out;
+    }
+
+    *f_pos += count;
+    retval = count;
+out:
+    mutex_unlock(&dev->mutex);
+    return retval;
+}
+
+ssize_t scull_write(struct file* filp, const char __user *buf,
+        size_t count, loff_t *f_pos)
+{
+    struct scull_dev *dev = filp->private_data;
+    struct scull_qset *ptr;
+    int quantum = dev->quantum;
+    int qset = dev->qset;
+    int item_size = quantum * qset;
+    int item, s_pos, q_pos, rest;
+    int retval = 0;
+
+    if (mutex_lock_interruptible(&dev->mutex))
+        return -ERESTARTSYS;
+
+    item = (long) *f_pos / item_size;
+    rest = (long) *f_pos % item_size;
+
+    s_pos = rest / quantum;
+    q_pos = rest % quantum;
+
+    ptr = scull_follow(dev, item);
+
+    if (ptr == NULL)
+        goto out;
+    if (!ptr->data) {
+        ptr->data = kmalloc(qset * sizeof(char*), GFP_KERNEL);
+        if (!ptr->data)
+            goto out;
+        memset(ptr->data, 0, qset * sizeof(char*));
+    }
+
+    if (!ptr->data[s_pos]) {
+        ptr->data[s_pos] = kmalloc(quantum * sizeof(char),
+                GFP_KERNEL);
+        if (!ptr->data[s_pos])
+            goto out;
+        //memset(ptr->data[s_pos], 0, quantum * sizeof(char));
+    }
+
+    if (count > quantum - q_pos)
+        count = quantum - q_pos;
+
+    if (copy_from_user(ptr->data[s_pos] + q_pos, buf, count)) {
+        retval = -EFAULT;
+        goto out;
+    }
+
+    *f_pos += count;
+    retval = count;
+
+    if (dev->size < *f_pos)
+        dev->size = *f_pos;
+
+out:
+    mutex_unlock(&dev->mutex);
+    return retval;
 }
 
 static int scull_open(struct inode* inode, struct file* filp)
@@ -94,6 +222,8 @@ struct file_operations scull_fops = {
     .owner = THIS_MODULE,
     .open = scull_open,
     .release = scull_release,
+    .read = scull_read,
+    .write = scull_write,
 };
 
 inline void scull_cleanup(void)
