@@ -290,6 +290,8 @@ static int __init scull_init(void)
     int result, i;
     dev_t dev = 0;
 
+    PDEBUG("%s\n", __func__);
+
     if (scull_major) {
         dev = MKDEV(scull_major, scull_minor);
         result = register_chrdev_region(dev, scull_nr_devs,

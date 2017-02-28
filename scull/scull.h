@@ -37,4 +37,12 @@ extern int scull_nr_devs;
 extern int scull_qset;
 extern int scull_quantum;
 
+#ifdef SCULL_DEBUG
+    #define PDEBUG(fmt, args...) printk(KERN_INFO "scull: " fmt, ## args)
+    #define DUMP_STACK() dump_stack()
+#else
+    #define PDEBUG(fmt, args...) ;
+    #define DUMP_STACK() ;
+#endif
+
 #endif
