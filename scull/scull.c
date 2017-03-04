@@ -85,6 +85,112 @@ struct scull_qset* scull_follow(struct scull_dev* dev, int n)
     return qs;
 }
 
+long scull_ioctl(struct file* filp, unsigned int cmd,
+        unsigned long arg)
+{
+    int err = 0, tmp;
+    int retval = 0;
+
+    /*
+     * check if it is a valid command
+     */
+    if (_IOC_TYPE(cmd) != SCULL_IOC_MAGIC) return -ENOTTY;
+    if (_IOC_NR(cmd) > SCULL_IOC_MAXNR) return -ENOTTY;
+
+    if (_IOC_DIR(cmd) & _IOC_READ)
+        err = !access_ok(VERIFY_WRITE, (void __user *)arg,
+                _IOC_SIZE(cmd));
+    else if (_IOC_DIR(cmd) & _IOC_WRITE)
+        err = !access_ok(VERIFY_READ, (void __user *)arg,
+                _IOC_SIZE(cmd));
+
+    if (err) return -EFAULT;
+
+    switch(cmd) {
+        case SCULL_IOCRESET:
+            scull_quantum = SCULL_QUANTUM;
+            scull_qset = SCULL_QSET;
+            break;
+
+        /* Set: arg points to the value */
+        case SCULL_IOCSQUANTUM:
+            if (!capable(CAP_SYS_ADMIN)) /* user is root */
+                return -EPERM;
+            retval = __get_user(scull_quantum, (int __user*) arg);
+            break;
+
+        case SCULL_IOCSQSET:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            retval = __get_user(scull_qset, (int __user*) arg);
+            break;
+
+        /* Get: arg is pointer to result */
+        case SCULL_IOCGQUANTUM:
+            retval = __put_user(scull_quantum, (int __user*) arg);
+            break;
+
+        case SCULL_IOCGQSET:
+            retval = __put_user(scull_qset, (int __user*) arg);
+            break;
+
+        /* Tell: arg is the value */
+        case SCULL_IOCTQUANTUM:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            scull_quantum = arg;
+            break;
+
+        case SCULL_IOCTQSET:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            scull_qset = arg;
+            break;
+
+        /* Query: return it*/
+        case SCULL_IOCQQUANTUM:
+            return scull_quantum;
+
+        case SCULL_IOCQQSET:
+            return scull_qset;
+
+        /*eXchange: use arg as pointer*/
+        case SCULL_IOCXQUANTUM:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            tmp = scull_quantum;
+            retval = __get_user(scull_quantum, (int __user*) arg);
+            if (retval == 0)
+                retval = __put_user(tmp, (int __user*)arg);
+            break;
+         case SCULL_IOCXQSET:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            tmp = scull_qset;
+            retval = __get_user(scull_qset, (int __user*) arg);
+            if (retval == 0)
+                retval = __put_user(tmp, (int __user*)arg);
+            break;
+        /*sHift: like Tell + Query*/
+         case SCULL_IOCHQUANTUM:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            tmp = scull_quantum;
+            scull_quantum = arg;
+            return tmp;
+         case SCULL_IOCHQSET:
+            if (!capable(CAP_SYS_ADMIN))
+                return -EPERM;
+            tmp = scull_qset;
+            scull_qset = arg;
+            return tmp;
+        default:
+            return -EINVAL;
+    }
+
+    return retval;
+}
+
 ssize_t scull_read(struct file* filp, char __user *buf,
         size_t count, loff_t *f_pos)
 {
@@ -96,6 +202,7 @@ ssize_t scull_read(struct file* filp, char __user *buf,
     int item, s_pos, q_pos, rest;
     int retval = 0;
 
+    DUMP_STACK();
     if (mutex_lock_interruptible(&dev->mutex))
         return -ERESTARTSYS;
     if (*f_pos >= dev->size)
@@ -139,6 +246,7 @@ ssize_t scull_write(struct file* filp, const char __user *buf,
     int item, s_pos, q_pos, rest;
     int retval = 0;
 
+    DUMP_STACK();
     if (mutex_lock_interruptible(&dev->mutex))
         return -ERESTARTSYS;
 
@@ -171,6 +279,7 @@ ssize_t scull_write(struct file* filp, const char __user *buf,
         count = quantum - q_pos;
 
     if (copy_from_user(ptr->data[s_pos] + q_pos, buf, count)) {
+        PDEBUG("error happend copy_to_user\n");
         retval = -EFAULT;
         goto out;
     }
@@ -193,6 +302,7 @@ static int scull_open(struct inode* inode, struct file* filp)
 
     filp->private_data = dev;
 
+    DUMP_STACK();
     if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
         if (mutex_lock_interruptible(&dev->mutex))
             return -ERESTARTSYS;
@@ -205,6 +315,7 @@ static int scull_open(struct inode* inode, struct file* filp)
 
 int scull_release(struct inode* inode, struct file* filp)
 {
+    DUMP_STACK();
     return 0;
 }
 
@@ -239,6 +350,7 @@ struct file_operations scull_fops = {
     .read = scull_read,
     .write = scull_write,
     .llseek = scull_llseek,
+    .unlocked_ioctl = scull_ioctl,
 };
 
 inline void scull_cleanup(void)
