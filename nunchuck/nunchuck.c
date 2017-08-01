@@ -30,9 +30,9 @@ static int nunchuck_thread(void* data)
         printk(KERN_INFO "[%s] FUNC: %s, LINE: %d: Thread running\n",
             DRIVER_NAME, __func__, __LINE__);
 
-        input_event(input, EV_KEY, BTN_Z, true);
-        input_event(input, EV_REL, REL_X, rel_data);
-        input_event(input, EV_REL, REL_Y, rel_data);
+        input_report_key(input, EV_KEY, BTN_LEFT, 1);
+        input_report_rel(input, EV_REL, REL_X, rel_data);
+        input_report_rel(input, EV_REL, REL_Y, rel_data);
         input_sync(input);
         msleep(NUNCHUCK_SLEEP_MS);
     }
@@ -74,9 +74,17 @@ static int nunchuck_probe(struct i2c_client* client,
 
     input->name = DRIVER_NAME;
     input->id.bustype = BUS_I2C;
-    __set_bit(EV_KEY, input->evbit);
-    __set_bit(EV_REL, input->evbit);
+    input->id.vendor = 0x1234;
+    input->id.product = 0xABCD;
     input->dev.parent = &client->dev;
+    input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REL);
+    input->relbit[BIT_WORD(REL_X)] =
+        BIT_MASK(REL_X) | BIT_MASK(REL_Y);
+    input->keybit[BIT_WORD(BTN_LEFT)] =
+        BIT_MASK(BTN_LEFT) | BIT_MASK(BTN_RIGHT) | BIT_MASK(BTN_MIDDLE);
+
+    __set_bit(INPUT_PROP_POINTER, input->propbit);
+    __set_bit(INPUT_PROP_POINTING_STICK, input->propbit);
     nunchuck->input_dev = input;
 
     result = input_register_device(nunchuck->input_dev);
