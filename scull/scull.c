@@ -202,7 +202,6 @@ ssize_t scull_read(struct file* filp, char __user *buf,
     int item, s_pos, q_pos, rest;
     int retval = 0;
 
-    DUMP_STACK();
     if (mutex_lock_interruptible(&dev->mutex))
         return -ERESTARTSYS;
     if (*f_pos >= dev->size)
@@ -246,7 +245,6 @@ ssize_t scull_write(struct file* filp, const char __user *buf,
     int item, s_pos, q_pos, rest;
     int retval = 0;
 
-    DUMP_STACK();
     if (mutex_lock_interruptible(&dev->mutex))
         return -ERESTARTSYS;
 
@@ -302,7 +300,6 @@ static int scull_open(struct inode* inode, struct file* filp)
 
     filp->private_data = dev;
 
-    DUMP_STACK();
     if ((filp->f_flags & O_ACCMODE) == O_WRONLY) {
         if (mutex_lock_interruptible(&dev->mutex))
             return -ERESTARTSYS;
@@ -315,7 +312,6 @@ static int scull_open(struct inode* inode, struct file* filp)
 
 int scull_release(struct inode* inode, struct file* filp)
 {
-    DUMP_STACK();
     return 0;
 }
 
@@ -353,6 +349,138 @@ struct file_operations scull_fops = {
     .unlocked_ioctl = scull_ioctl,
 };
 
+#ifdef SCULL_DEBUG
+static void* scull_seq_start(struct seq_file *s, loff_t *pos)
+{
+    if (*pos >= scull_nr_devs)
+        return NULL;
+    return scull_devices + *pos;
+}
+
+static void *scull_seq_next(struct seq_file *s, void *v, loff_t *pos)
+{
+    (*pos)++;
+    if (*pos >= scull_nr_devs)
+        return NULL;
+    return scull_devices + *pos;
+}
+
+static void scull_seq_stop(struct seq_file *s, void *v)
+{
+    return;
+}
+
+static int scull_seq_show(struct seq_file* s, void* v)
+{
+    struct scull_dev *dev = (struct scull_dev*) v;
+    struct scull_qset *d = NULL;
+    int i;
+
+    /*Critical section*/
+    if (mutex_lock_interruptible(&dev->mutex))
+        return -ERESTARTSYS;
+
+    seq_printf(s, "\nDevice %i: qset %i, q %i, sz %li\n",
+            (int) (dev - scull_devices), dev->qset,
+        dev->quantum, dev->size);
+
+    for (d = dev->data; d; d = d->next) {
+        seq_printf(s, " item at %p, qset at %p\n", d, d->data);
+        if (d->data && !d->next) // the last item
+            for (i = 0; i < dev->qset; i++) {
+                if (d->data[i])
+                    seq_printf(s, "     %4i: %8p\n",
+                            i, d->data[i]);
+            }
+    }
+    mutex_unlock(&dev->mutex);
+    /*End of Critical section*/
+    return 0;
+}
+
+static int scull_read_mem_proc_show(struct seq_file *m, void* v)
+{
+    int i, j;
+    int limit = m->size - 80;
+
+    for (i = 0; i < scull_nr_devs && m->count <= limit; i++) {
+        struct scull_dev *d = &scull_devices[i];
+        struct scull_qset *qs = d->data;
+        /*Critical section*/
+        if (mutex_lock_interruptible(&d->mutex))
+            return -ERESTARTSYS;
+        seq_printf(m, "\nDevice %i: qset %i, q %i, sz %li\n",
+                i, d->qset, d->quantum, d->size);
+        for (; qs && m->count <= limit; qs = qs->next) {
+            seq_printf(m, " item at %p, qset at %p\n",
+                    qs, qs->data);
+            if (qs->data && !qs->next)
+                for (j = 0; j < d->qset; j++) {
+                    if (qs->data[j])
+                        seq_printf(m, "     %4i: %8p\n",
+                                j, qs->data[j]);
+                }
+        }
+        mutex_unlock(&scull_devices[i].mutex);
+        /*End of Critical section*/
+    }
+    return 0;
+}
+
+static struct seq_operations scull_seq_ops = {
+    .start = scull_seq_start,
+    .next = scull_seq_next,
+    .stop = scull_seq_stop,
+    .show = scull_seq_show,
+};
+
+static int scull_proc_open(struct inode* inode, struct file* file)
+{
+    return seq_open(file, &scull_seq_ops);
+}
+
+
+static struct file_operations scull_proc_ops = {
+    .owner = THIS_MODULE,
+    .open = scull_proc_open,
+    .read = seq_read,
+    .llseek = seq_lseek,
+    .release = seq_release,
+};
+
+
+#define DEFINE_PROC_SEQ_FILE(_name) \
+    static int _name##_proc_open(struct inode* inode, \
+            struct file* file) \
+    {\
+        return single_open(file, _name##_proc_show, NULL); \
+    } \
+    static const struct file_operations _name##_proc_fops = { \
+        .open = _name##_proc_open, \
+        .read = seq_read, \
+        .llseek = seq_lseek, \
+        .release = single_release, \
+    };
+
+DEFINE_PROC_SEQ_FILE(scull_read_mem)
+
+static void scull_create_proc(void)
+{
+    struct proc_dir_entry* entry;
+    proc_create("scullmem", 0, NULL, &scull_read_mem_proc_fops);
+    entry = proc_create("scullseq", 0, NULL, &scull_proc_ops);
+
+    if (!entry)
+        printk(KERN_WARNING "proc_create scullseq failed\n");
+}
+
+static void scull_remove_proc(void)
+{
+    remove_proc_entry("scullseq", NULL);
+}
+
+#endif /*SCULL_DEBUG*/
+
 inline void scull_cleanup(void)
 {
     int i;
@@ -371,6 +499,9 @@ inline void scull_cleanup(void)
         class_destroy(scull_class);
 
     unregister_chrdev_region(devno, scull_nr_devs);
+#ifdef SCULL_DEBUG
+    scull_remove_proc();
+#endif
 }
 
 static void __exit scull_exit(void)
@@ -433,7 +564,6 @@ static int __init scull_init(void)
 
     scull_class = class_create(THIS_MODULE, SCULL_NAME);
 
-    printk(KERN_INFO "check class\n");
     if (IS_ERR(scull_class)) {
         result = -EFAULT;
         printk(KERN_WARNING "%s: error class_create\n", SCULL_NAME);
@@ -446,6 +576,10 @@ static int __init scull_init(void)
         mutex_init(&scull_devices[i].mutex);
         scull_setup_cdev(&scull_devices[i], i);
     }
+
+#ifdef SCULL_DEBUG
+    scull_create_proc();
+#endif
 
     return 0;
 fail:
