@@ -6,16 +6,92 @@
 #include <linux/input.h>
 
 #define DRIVER_NAME "nunchuck"
-#define NUNCHUCK_SLEEP_MS 10000
-#define DELTA (s8) 20
+#define THREAD_SLEEP_MS 50
+#define JOYSTICK_SCALE_FACTOR 3
+#define JOYSTICK_IGNORE_THREASHOLD 5
+
+int joystick_scale_factor = JOYSTICK_SCALE_FACTOR;
+unsigned int thread_sleep_ms = THREAD_SLEEP_MS;
+int joystick_ignore_threshold = JOYSTICK_IGNORE_THREASHOLD;
+
+#define usleep(micro_sec) usleep_range(micro_sec, micro_sec + 500)
 
 struct task_struct *nunchuck_tsk;
 
-struct nunchuck_dev
-{
+struct nunchuck_dev {
     struct i2c_client *i2c_client;
     struct input_dev *input_dev;
 };
+
+struct nunchuck_signal {
+    int jx;
+    int jy;
+    int bz;
+    int bc;
+    int ax;
+    int ay;
+    int az;
+};
+
+#define ABS(i) (((i) < 0)? (-1 * (i)) : (i))
+
+int parse_nunchuck_signal(struct nunchuck_signal* signal,
+        char* buf, int count)
+{
+    if (count < 6)
+        return -1;
+
+    signal->jx = (int) (buf[0] - (char) 128) / joystick_scale_factor;
+    signal->jy = (int) ((char) 128 - buf[1]) / joystick_scale_factor;
+    signal->bz = (~buf[5]) & 0x01;
+    signal->bc = ((~buf[5]) >> 1) & 0x01;
+    signal->ax = (buf[5] >> 2 & 0x3) | (buf[2] << 2);
+    signal->ay = (buf[5] >> 4 & 0x3) | (buf[3] << 2);
+    signal->az = (buf[5] >> 6 & 0x3) | (buf[4] << 2);
+
+    if (ABS(signal->jx) < joystick_ignore_threshold)
+        signal->jx = 0;
+    if (ABS(signal->jy) < joystick_ignore_threshold)
+        signal->jy = 0;
+
+    /*printk(KERN_INFO "[%s] jx: %d jy: %d bz: %d bc: %d ax: %d ay: %d az: %d\n",
+            DRIVER_NAME, signal->jx, signal->jy, signal->bz, signal->bc,
+            signal->ax, signal->ay, signal->az);*/
+    return 0;
+}
+
+int nunchuck_write_registers(struct i2c_client* client,
+        char* buf, int count)
+{
+    int status;
+    status = i2c_master_send(client, buf, count);
+    if (status < 0) {
+        printk(KERN_INFO "Error writing nunchuck\n");
+        return status;
+    }
+
+    usleep(1000);
+    return status;
+}
+
+int nunchuck_read_registers(struct i2c_client* client,
+        char* buf, int count)
+{
+    int status;
+    char read[] = {0x00};
+
+    msleep(10);
+    nunchuck_write_registers(client, read, sizeof(read));
+    msleep(9);
+
+    status = i2c_master_recv(client, buf, count);
+    if (status < 0) {
+        printk(KERN_INFO "Error writing nunchuck\n");
+        return status;
+    }
+
+    return status;
+}
 
 static int nunchuck_thread(void* data)
 {
@@ -23,18 +99,23 @@ static int nunchuck_thread(void* data)
         (struct nunchuck_dev*) data;
 
     struct input_dev* input = nunchuck->input_dev;
+    struct i2c_client* client = nunchuck->i2c_client;
 
-    s8 rel_data = DELTA;
+    char buf[6];
+    struct nunchuck_signal sig;
 
     while (!kthread_should_stop()) {
-        printk(KERN_INFO "[%s] FUNC: %s, LINE: %d: Thread running\n",
-            DRIVER_NAME, __func__, __LINE__);
-
-        input_report_key(input, EV_KEY, BTN_LEFT, 1);
-        input_report_rel(input, EV_REL, REL_X, rel_data);
-        input_report_rel(input, EV_REL, REL_Y, rel_data);
-        input_sync(input);
-        msleep(NUNCHUCK_SLEEP_MS);
+        if (nunchuck_read_registers(client, buf, sizeof(buf)) < 0)
+            goto next_loop;
+        if (!parse_nunchuck_signal(&sig, buf, sizeof(buf))) {
+            input_report_key(input, BTN_LEFT, sig.bc);
+            input_report_key(input, BTN_RIGHT, sig.bz);
+            input_report_rel(input, REL_X, sig.jx);
+            input_report_rel(input, REL_Y, sig.jy);
+            input_sync(input);
+        }
+next_loop:
+        msleep(thread_sleep_ms);
     }
 
     return 0;
@@ -46,6 +127,8 @@ static int nunchuck_probe(struct i2c_client* client,
     struct nunchuck_dev *nunchuck = NULL;
     struct input_dev *input = NULL;
     int result;
+    char init1[] = {0xf0, 0x55};
+    char init2[] = {0xfb, 0x00};
 
     dump_stack();
     printk(KERN_INFO "[%s] FUNC: %s, LINE: %d: Hello nunchuck!\n",
@@ -92,11 +175,20 @@ static int nunchuck_probe(struct i2c_client* client,
     if (result < 0)
         goto register_err;
 
+    result = nunchuck_write_registers(client, init1, sizeof(init1));
+    if (result < 0)
+        goto write_error;
+    result = nunchuck_write_registers(client, init2, sizeof(init2));
+    if (result < 0)
+        goto write_error;
+
     nunchuck_tsk = kthread_run(nunchuck_thread,
             nunchuck, "nunchuck_thread");
 
     return 0;
 
+write_error:
+    input_unregister_device(nunchuck->input_dev);
 register_err:
     input_free_device(nunchuck->input_dev);
     return -ENOMEM;
