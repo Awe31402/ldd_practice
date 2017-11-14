@@ -230,7 +230,7 @@ static int nunchuck_thread(void* data)
         if (nunchuck_read_registers(client, buf, sizeof(buf)) < 0)
             goto next_loop;
         if (mutex_lock_interruptible(&params.lock))
-            goto next_loop;
+            goto stop;
 
         threshold = params.joystick_ignore_threshold;
         sleep_ms = params.thread_sleep_ms;
@@ -248,7 +248,7 @@ static int nunchuck_thread(void* data)
 next_loop:
         msleep(params.thread_sleep_ms);
     }
-
+stop:
     return 0;
 }
 
